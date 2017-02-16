@@ -368,6 +368,13 @@
             return reference;
         }
 
+        public static JavaScriptValue CreatePromise(out JavaScriptValue resolve, out JavaScriptValue reject)
+        {
+            JavaScriptValue promise;
+            Native.ThrowIfError(Native.JsCreatePromise(out promise, out resolve, out reject));
+            return promise;
+        }
+
         /// <summary>
         ///     Creates a new JavaScript error object
         /// </summary>

@@ -1,11 +1,20 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using ChakraCoreHost.Tasks;
 using ChakraHost.Hosting;
 
 namespace ChakraHost
 {
     public static class Program
     {
+        private static ManualResetEvent queueEvent = new ManualResetEvent(false);
+        private static volatile int outstandingItems = 0;
+        private static Queue<TaskItem> taskQueue = new Queue<TaskItem>();
+        private static object taskSync = new object();
+
         private struct CommandLineArguments
         {
             public int ArgumentsStart;
@@ -17,6 +26,61 @@ namespace ChakraHost
         // delegates aren't collected while the script is running.
         private static readonly JavaScriptNativeFunction echoDelegate = Echo;
         private static readonly JavaScriptNativeFunction runScriptDelegate = RunScript;
+        private static readonly JavaScriptNativeFunction doSuccessfulWorkDelegate = DoSuccessfulWork;
+        private static readonly JavaScriptNativeFunction doUnsuccessfulWorkDelegate = DoUnsuccessfulWork;
+
+        private static void Enqueue(TaskItem item)
+        {
+            lock(taskSync)
+            {
+                taskQueue.Enqueue(item);
+            }
+
+            queueEvent.Set();
+        }
+
+        private static TaskItem Dequeue()
+        {
+            TaskItem item = null; 
+            lock (taskSync)
+            {
+                item = taskQueue.Dequeue();
+            }
+
+            queueEvent.Reset();
+
+            return item;
+        }
+
+        private static void PumpMessages()
+        {
+            while (true)
+            {
+                bool hasTasks = false;
+                bool hasOutstandingItems = false;
+
+                lock (taskSync)
+                {
+                    hasTasks = taskQueue.Count > 0;
+                    hasOutstandingItems = outstandingItems > 0;
+                }
+
+                if (hasTasks)
+                {
+                    TaskItem task = Dequeue();
+                    task.Run();
+                    task.Dispose();
+                }
+                else if (hasOutstandingItems)
+                {
+                    queueEvent.WaitOne();
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
 
         private static void ThrowException(string errorString)
         {
@@ -73,6 +137,75 @@ namespace ChakraHost
             //
 
             return JavaScriptContext.RunScript(script, currentSourceContext++, filename);
+        }
+
+        private static async void CallAfterDelay(JavaScriptValue function, int delayInMilliseconds, string value)
+        {
+            lock (taskSync)
+            {
+                outstandingItems++;
+            }
+
+            await Task.Delay(delayInMilliseconds);
+
+            Enqueue(new ActionTaskItem(() => { function.CallFunction(JavaScriptValue.GlobalObject, JavaScriptValue.FromString(value)); }));
+
+            lock (taskSync)
+            {
+                outstandingItems--;
+            }
+        }
+
+        private static JavaScriptValue DoSuccessfulWork(JavaScriptValue callee, bool isConstructCall, JavaScriptValue[] arguments, ushort argumentCount, IntPtr callbackData)
+        {
+            JavaScriptValue resolve;
+            JavaScriptValue reject;
+            JavaScriptValue promise = JavaScriptValue.CreatePromise(out resolve, out reject);
+
+            CallAfterDelay(resolve, 5000, "promise from native code");
+
+            return promise;
+        }
+
+        private static JavaScriptValue DoUnsuccessfulWork(JavaScriptValue callee, bool isConstructCall, JavaScriptValue[] arguments, ushort argumentCount, IntPtr callbackData)
+        {
+            JavaScriptValue resolve;
+            JavaScriptValue reject;
+            JavaScriptValue promise = JavaScriptValue.CreatePromise(out resolve, out reject);
+
+            CallAfterDelay(reject, 5000, "promise from native code");
+
+            return promise;
+        }
+
+        private static JavaScriptValue ResolveCallback(JavaScriptValue callee, bool isConstructCall, JavaScriptValue[] arguments, ushort argumentCount, IntPtr callbackData)
+        {
+            if (argumentCount > 1)
+            {
+                Console.WriteLine("Resolved: " + arguments[1].ConvertToString().ToString());
+            }
+
+            return JavaScriptValue.Invalid;
+        }
+
+        private static JavaScriptValue RejectCallback(JavaScriptValue callee, bool isConstructCall, JavaScriptValue[] arguments, ushort argumentCount, IntPtr callbackData)
+        {
+            if (argumentCount > 1)
+            {
+                Console.WriteLine("Rejected: " + arguments[1].ConvertToString().ToString());
+            }
+
+            return JavaScriptValue.Invalid;
+        }
+
+        private static void ContinuePromise(JavaScriptValue promise)
+        {
+            JavaScriptPropertyId thenId = JavaScriptPropertyId.FromString("then");
+            JavaScriptValue thenFunction = promise.GetProperty(thenId);
+
+            JavaScriptValue resolveFunc = JavaScriptValue.CreateFunction(ResolveCallback);
+            JavaScriptValue rejectFunc = JavaScriptValue.CreateFunction(RejectCallback);
+            JavaScriptValue thenPromise = thenFunction.CallFunction(promise, resolveFunc, rejectFunc);
         }
 
         private static void DefineHostCallback(JavaScriptValue globalObject, string callbackName, JavaScriptNativeFunction callback, IntPtr callbackData)
@@ -141,6 +274,8 @@ namespace ChakraHost
 
                 DefineHostCallback(hostObject, "echo", echoDelegate, IntPtr.Zero);
                 DefineHostCallback(hostObject, "runScript", runScriptDelegate, IntPtr.Zero);
+                DefineHostCallback(hostObject, "doSuccessfulWork", doSuccessfulWorkDelegate, IntPtr.Zero);
+                DefineHostCallback(hostObject, "doUnsuccessfulWork", doUnsuccessfulWorkDelegate, IntPtr.Zero);
 
                 //
                 // Create an array for arguments.
@@ -198,6 +333,11 @@ namespace ChakraHost
             Console.Error.WriteLine("chakrahost: exception: {0}", message);
         }
 
+        private static void PromiseContinuationCallback(JavaScriptValue task, IntPtr callbackState)
+        {
+            taskQueue.Enqueue(new JsTaskItem(task));
+        }
+
         //
         // The main entry point for the host.
         //
@@ -234,6 +374,8 @@ namespace ChakraHost
 
                     using (new JavaScriptContext.Scope(context))
                     {
+                        JavaScriptRuntime.SetPromiseContinuationCallback(PromiseContinuationCallback, IntPtr.Zero);
+
                         //
                         // Load the script from the disk.
                         //
@@ -248,6 +390,25 @@ namespace ChakraHost
                         try
                         {
                             result = JavaScriptContext.RunScript(script, currentSourceContext++, arguments[commandLineArguments.ArgumentsStart]);
+
+                            // Call JS functions and continue the returned promises.
+                            JavaScriptPropertyId hostId = JavaScriptPropertyId.FromString("host");
+                            JavaScriptValue hostObject = JavaScriptValue.GlobalObject.GetProperty(hostId);
+
+                            JavaScriptPropertyId doSuccessfulJsWorkId = JavaScriptPropertyId.FromString("doSuccessfulJsWork");
+                            JavaScriptValue doSuccessfulJsWorkFunction = hostObject.GetProperty(doSuccessfulJsWorkId);
+                            JavaScriptValue resolvedPromise = doSuccessfulJsWorkFunction.CallFunction(JavaScriptValue.GlobalObject);
+
+                            ContinuePromise(resolvedPromise);
+
+                            JavaScriptPropertyId doUnsuccessfulJsWorkId = JavaScriptPropertyId.FromString("doUnsuccessfulJsWork");
+                            JavaScriptValue doUnsuccessfulJsWorkFunction = hostObject.GetProperty(doUnsuccessfulJsWorkId);
+                            JavaScriptValue rejectedPromise = doUnsuccessfulJsWorkFunction.CallFunction(JavaScriptValue.GlobalObject);
+
+                            ContinuePromise(rejectedPromise);
+
+                            // Pump messages in the task queue.
+                            PumpMessages();
                         }
                         catch (JavaScriptScriptException e)
                         {

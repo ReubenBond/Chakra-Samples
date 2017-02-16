@@ -439,5 +439,8 @@
         [DllImport(DllName)]
         internal static extern JavaScriptErrorCode JsRunSerializedScriptWithCallback(JavaScriptSerializedScriptLoadSourceCallback scriptLoadCallback,
             JavaScriptSerializedScriptUnloadCallback scriptUnloadCallback, byte[] buffer, JavaScriptSourceContext sourceContext, string sourceUrl, out JavaScriptValue result);
+
+        [DllImport(DllName)]
+        internal static extern JavaScriptErrorCode JsCreatePromise(out JavaScriptValue promise, out JavaScriptValue resolve, out JavaScriptValue reject);
     }
 }

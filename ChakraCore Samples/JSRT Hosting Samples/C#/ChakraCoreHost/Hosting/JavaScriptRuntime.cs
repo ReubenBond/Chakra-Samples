@@ -128,6 +128,11 @@
             return Create(JavaScriptRuntimeAttributes.None, JavaScriptRuntimeVersion.Version11, null);
         }
 
+        public static void SetPromiseContinuationCallback(JavaScriptPromiseContinuationCallback callback, IntPtr callbackState)
+        {
+            Native.JsSetPromiseContinuationCallback(callback, callbackState);
+        }
+
         /// <summary>
         ///     Disposes a runtime.
         /// </summary>
