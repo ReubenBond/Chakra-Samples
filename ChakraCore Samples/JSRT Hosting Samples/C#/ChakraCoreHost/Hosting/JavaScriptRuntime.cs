@@ -130,8 +130,13 @@
 
         public static void SetPromiseContinuationCallback(JavaScriptPromiseContinuationCallback callback, IntPtr callbackState)
         {
-            Native.JsSetPromiseContinuationCallback(callback, callbackState);
+            Native.ThrowIfError(Native.JsSetPromiseContinuationCallback(callback, callbackState));
         }
+
+        /*public static void SetBeforeObjectCollectionCallback()
+        {
+Native.JsSetObjectBeforeCollectCallback(JavaScriptValue reference, IntPtr callbackState, JavaScriptObjectBeforeCollectCallback beforeCollectCallback);
+    }*/
 
         /// <summary>
         ///     Disposes a runtime.

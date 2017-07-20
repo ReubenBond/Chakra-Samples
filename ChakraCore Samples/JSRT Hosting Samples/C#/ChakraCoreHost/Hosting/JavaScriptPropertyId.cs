@@ -32,25 +32,7 @@
         {
             get { return new JavaScriptPropertyId(IntPtr.Zero); }
         }
-
-        /// <summary>
-        ///     Gets the name associated with the property ID.
-        /// </summary>
-        /// <remarks>
-        ///     <para>
-        ///     Requires an active script context.
-        ///     </para>
-        /// </remarks>
-        public string Name
-        {
-            get
-            {
-                string name;
-                Native.ThrowIfError(Native.JsGetPropertyNameFromId(this, out name));
-                return name;
-            }
-        }
-
+        
         /// <summary>
         ///     Gets the property ID associated with the name. 
         /// </summary>
@@ -127,15 +109,6 @@
         public override int GetHashCode()
         {
             return id.ToInt32();
-        }
-
-        /// <summary>
-        ///     Converts the property ID to a string.
-        /// </summary>
-        /// <returns>The name of the property ID.</returns>
-        public override string ToString()
-        {
-            return Name;
         }
     }
 }
